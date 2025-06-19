@@ -89,3 +89,94 @@
     active: bool,
   }
 )
+
+;; Fractional ownership distribution records
+(define-map fractional-ownership
+  {
+    token-id: uint,
+    owner: principal,
+  }
+  { shares: uint }
+)
+
+;; Staking rewards accumulation tracking
+(define-map staking-rewards
+  { token-id: uint }
+  {
+    accumulated-yield: uint,
+    last-claim: uint,
+  }
+)
+
+;; PRIVATE HELPER FUNCTIONS
+
+;; Validates URI format and length constraints
+(define-private (validate-uri (uri (string-ascii 256)))
+  (let ((uri-len (len uri)))
+    (and
+      (> uri-len u0)
+      (<= uri-len u256)
+    )
+  )
+)
+
+;; Prevents transfers to contract address
+(define-private (validate-recipient (recipient principal))
+  (not (is-eq recipient (as-contract tx-sender)))
+)
+
+;; Safe arithmetic addition with overflow protection
+(define-private (safe-add
+    (a uint)
+    (b uint)
+  )
+  (let ((sum (+ a b)))
+    (asserts! (>= sum a) ERR-OVERFLOW)
+    (ok sum)
+  )
+)
+
+;; CORE NFT MINTING & TRANSFER FUNCTIONS
+
+;; Mints new NFT with STX collateral backing
+(define-public (mint-nft
+    (uri (string-ascii 256))
+    (collateral uint)
+  )
+  (let (
+      (token-id (+ (var-get total-supply) u1))
+      (collateral-requirement (/ (* (var-get min-collateral-ratio) collateral) u100))
+    )
+    (asserts! (validate-uri uri) ERR-INVALID-URI)
+    (asserts! (>= (stx-get-balance tx-sender) collateral-requirement)
+      ERR-INSUFFICIENT-COLLATERAL
+    )
+    ;; Lock collateral in contract
+    (try! (stx-transfer? collateral-requirement tx-sender (as-contract tx-sender)))
+    ;; Register new NFT
+    (map-set tokens { token-id: token-id } {
+      owner: tx-sender,
+      uri: uri,
+      collateral: collateral,
+      is-staked: false,
+      stake-timestamp: u0,
+      fractional-shares: u0,
+    })
+    (var-set total-supply token-id)
+    (ok token-id)
+  )
+)
+
+;; Transfers NFT ownership with comprehensive validation
+(define-public (transfer-nft
+    (token-id uint)
+    (recipient principal)
+  )
+  (let ((token (unwrap! (get-token-info token-id) ERR-INVALID-TOKEN)))
+    (asserts! (validate-recipient recipient) ERR-INVALID-RECIPIENT)
+    (asserts! (is-eq tx-sender (get owner token)) ERR-NOT-TOKEN-OWNER)
+    (asserts! (not (get is-staked token)) ERR-ALREADY-STAKED)
+    (map-set tokens { token-id: token-id } (merge token { owner: recipient }))
+    (ok true)
+  )
+)
